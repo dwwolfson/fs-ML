@@ -1,2 +1,4 @@
 # fs-ML
-file manip for ML auto camera ID model
+# extracting info from model output
+# pulling metadata
+# using exiftool
