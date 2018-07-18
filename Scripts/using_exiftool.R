@@ -17,7 +17,7 @@ out<-system('C:/Users/apdwwolfson/Documents/ExifTool/exiftool -n -csv C:/Users/a
 out.df<-read.csv(textConnection(out), stringsAsFactors = FALSE, header=F)
 names(out.df)
 #################################################################################
-# A better way
+# A better way to do it
 
 #Set working directory to where the images are
 setwd('C:/Users/apdwwolfson/Documents/test_images')
