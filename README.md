@@ -1,2 +1,5 @@
 # fs-ML
-file manip for ML auto camera ID model
+### extracting info from model output
+### pulling metadata
+### using exiftool
+### turning machine learning output into input file for occupancy analyses
