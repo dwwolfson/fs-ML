@@ -16,12 +16,12 @@ ca_path<-paste(root_path, "CA_exiftool_output", sep='/')
 fl_path<-paste(root_path, "FL_output", sep='/')
 
 ####################
-# TAG Images (in one level above CA and FL image folders)
-tag<-read_csv('All_Tag_output.csv') #doesn't look like there is information about the bursts
-# No Sequence or Event Number
-names(tag)
-tag_cols<-c('Directory','FileName', 'DateTimeOriginal')
-tag<-tag[,tag_cols]
+# # TAG Images (in one level above CA and FL image folders)
+# tag<-read_csv('All_Tag_output.csv') #doesn't look like there is information about the bursts
+# # No Sequence or Event Number
+# names(tag)
+# tag_cols<-c('Directory','FileName', 'DateTimeOriginal')
+# tag<-tag[,tag_cols]
 
 ##################
 cols_keep<-c('Directory','FileName', 'DateTimeOriginal', 'Sequence', 'EventNumber')
@@ -61,7 +61,7 @@ for(i in 1:length(fl_files)){
   temp$chk_burst<-paste(temp$unique_chk, temp$EventNumber, sep='_')
   fl_db<-rbind(fl_db, temp)
   print(i)
-}
+} # this still takes a while to load all the data frames
 
 fl_db$camID<-sapply(fl_db$FileName, function(x)
   strsplit(x, '_')[[1]][1])
@@ -121,12 +121,12 @@ pig_burstdb<-alldat%>%
 tot_bursts<-length(unique(pig_burstdb$cam_chk_burst)) # total number of bursts that contained a guess for pig 61k (regardless of conf thresh)
 conf95<-pig_burstdb%>%
   group_by(cam_chk_burst)%>%
-  mutate(b_max=max(CONFIDENCE1), b_min=min(CONFIDENCE1)) 
+  mutate(b_max=max(CONFIDENCE1), b_min=min(CONFIDENCE1))
 hist(conf95$b_max)
 hist(conf95$b_min)
 summary(conf95$b_max)
 
-#now filter based on max burst 
+#now filter based on max burst
 filt_conf95<-conf95%>%
   filter(b_max>0.9499)
 length(unique(filt_conf95$cam_chk_burst))/tot_bursts #59% of bursts retained
@@ -139,7 +139,7 @@ conf95<-arrange(conf95, camID, unique_chk, EventNumber)
 ###################################################################################################
 # now to see the relationship with lots of different confidence thresholds
 
-confs<-seq(0.5, 1, 0.05)
+confs<-seq(0.5, 1, 0.01)
 filt_db<-data.frame(thresholds=confs, prop_retained=NA)
 for(i in 1:length(confs)){
   tmp<-pig_burstdb%>%
@@ -149,7 +149,7 @@ for(i in 1:length(confs)){
     filter(b_max>confs[i])                                  #filter out data by the max burst confidence
   filt_db[i,2]<-length(unique(tmp$cam_chk_burst))/tot_bursts #compare number of burst remaining to original total
 }
-ggplot(filt_db, aes(thresholds, prop_retained))+geom_point()
+ggplot(filt_db, aes(thresholds, prop_retained))+geom_point()+geom_line()
 #########################################################################################
 
 
@@ -173,6 +173,7 @@ alldat$study<-as.factor(alldat$study)
 unique(alldat$study)
 fl<-alldat[alldat$study=='FL',]
 ca<-alldat[alldat$study=='CA',]
+options(lubridate.verbose=TRUE)
 ca$DateTimeOriginal<-ymd_hms(ca$DateTimeOriginal, tz = "US/Pacific") # 40 failed to parse
 fl$DateTimeOriginal<-ymd_hms(fl$DateTimeOriginal, tz = "US/Eastern") # 160 filed to parse
 alldat<-rbind(ca, fl)
@@ -183,6 +184,9 @@ alldat$hour<-hour(alldat$DateTimeOriginal)
 alldat$month<-month(alldat$DateTimeOriginal)
 alldat<-alldat[!is.na(alldat$day),]            #filter on one of the new columns to remove rows where the dates didn't parse
 
+
+#Check all the different time zones that are present in the dataset
+# table(sapply(alldat$DateTimeOriginal, tz)) #it's saying that they're all "US/Pacific" ???
 
 # 50% filter as a baseline to compare to
 p50<-alldat%>%
@@ -195,19 +199,8 @@ p50<-p50%>%
 
 #########
 # now turn to occ table
-# first by week, then by month
-p50_wk<-dummy_cols(p50, select_columns = 'week')
-p50_month<-dummy_cols(p50, select_columns= 'month')
 
-#Sort the columns by order of the weeks/months
-p50_wk<-p50_wk[stringi::stri_order(sub(".*_", "", names(p50_wk)), numeric=TRUE)]
-p50_month<-p50_month[stringi::stri_order(sub(".*_", "", names(p50_month)), numeric=TRUE)]
-
-#Collapse rows on camID. take the max of the columns, so if there is a 1 for a time interval, it's all 1, otherwise 0.
-p50_wk_occ<-p50_wk%>%
-  group_by(camID)%>%
-  summarise_at(.vars=names(p50_wk)[grepl('week_', names(p50_wk))], .funs=max)
-
+#function for different species, thresholds and time intervals (saved as a separate file)
 
 occ_db<-function(df,species, thresh, time_int){ 
   # df must be a dataframe with variables[camID=]
@@ -238,44 +231,75 @@ test<-occ_db(df=alldat,species=22, thresh=0.5, time_int = 'week')
 test1<-occ_db(df=alldat,species=22, thresh=0.5, time_int = 'month')
 
 # ***   A problem of the dummy_cols function is that it's giving something a 0 whether a cam was active or not, instead 
-# of a 0 is cam active and no pig and a NA if cam not active
+# of a 0 is cam active and no pig and a NA if cam not active. I'll need another function to deal with this.
+##############################################################################################
+##############################################################################################
 
-# But this isn't the fault of the function that makes the dummy variables; I just need to make sure that I'm 
-# inserting NA's for the times that a camera didn't have images.
-
-# Maybe I can make a function that finds the range of dates 
-
-#test out
-df1<-df%>%
-  group_by(camID)%>%
-  mutate(start_date=min(DateTimeOriginal), 
-         end_date=max(DateTimeOriginal))
-
-#pull out the deployment data
-camDates<-df%>%
+insert_NA<-function(occ_dataframe,full_dataframe, time_int){
+  #time_int needs to be either week, day, or hour for this function, can't be month (although I could write in month to just be equal to 30 days...)
+  # 1) First I'll probably want to pull out all the deployment info for all the cameras
+  camDates<-full_dataframe%>%
   group_by(camID)%>%
   summarise(start_date=min(DateTimeOriginal), 
             start_yr=year(start_date),
             start_wk=week(start_date),
             start_yr_wk=paste(start_yr, start_wk, sep='_'),
-            end_date=min(DateTimeOriginal), 
+            end_date=max(DateTimeOriginal), 
             end_yr=year(end_date),
             end_wk=week(end_date),
             end_yr_wk=paste(end_yr, end_wk, sep='_'))
+# 2) Now I'll need to compare the deployment dates of each camera to the overall range of dates 
+#    that the occupancy table is compiling information for.
+date_range<-c(min(df$DateTimeOriginal), max(df$DateTimeOriginal)) # except these are different time zones
+# First convert camDates to data.frame for it to work nicely with the ifelse statement
+camDates<-as.data.frame(camDates)
+#3) Now I need a way to determine if 1) the start date of the cam is after the global start, and by how much;
+# and 2) if the end data of the cam is before the global end date
+for(i in 1:nrow(camDates)){
+if(camDates[i,"start_yr"]!=year(date_range[1])){
+  print(paste("Camera", camDates[i, "camID"], "has a start date that isn't the same year as the global start date. Exclude and rerun."))
+  break}
+   s.diff<-difftime(camDates[i,'start_date'], date_range[1]) #diff b/w cam start and occ table global start
+   if(time_int=="week"){s.diff.units<-as.numeric(s.diff, units="weeks")}
+   if(time_int=="day"){s.diff.units<-as.numeric(s.diff, units="days")}
+   if(time_int=="hour"){s.diff.units<-as.numeric(s.diff, units="hours")} #months don't work because they aren't of fixed duration
+      if(abs(s.diff.units)<1){
+        print(paste("Camera", camDates[i, "camID"], "starts within one time interval of global start."))
+      } else if(abs(s.diff.units)>1){
+        print(paste("Camera", camDates[i, "camID"], "starts more than one interval from global start. Adding NA's to occupancy dataframe."))
+        start_cols<-round(s.diff.units)
+        occ_dataframe[i,2:(2+start_cols)]<-NA} #this makes the first time interval that the camera has NA as well because it's a partial interval
+if(camDates[i, "end_yr"]!=year(date_range[2])){
+  print(paste("Camera", camDates[i, "camID"], "has an end date that isn't the same year as the global start date. Exclude and rerun."))
+  break}
+   e.diff<-difftime(camDates[i,'end_date'], date_range[2]) #diff b/w cam end and occ table global end
+   if(time_int=="week"){e.diff.units<-as.numeric(e.diff, units="weeks")}
+   if(time_int=="day"){e.diff.units<-as.numeric(e.diff, units="days")}
+   if(time_int=="hour"){e.diff.units<-as.numeric(e.diff, units="hours")}
+     if(abs(e.diff.units)<1){
+       print(paste("Camera", camDates[i, "camID"], "ends within one time interval of global end."))
+     } else if (abs(e.diff.units)>1){
+       print(paste("Camera", camDates[i, "camID"], "ends more than one interval from global end. Adding NA's to occupancy dataframe."))
+       end_cols<-round(e.diff.units) # this should be negative
+       occ_dataframe[i, (ncol(occ_dataframe)+end_cols):ncol(occ_dataframe)]<-NA
+       #this makes the last time interval that the camera has NA as well because it's a partial interval
+     }
+}
+return(occ_dataframe)
+}
+
+###############################################################################################
+################################################################################################
+#test it out
+super_test<-insert_NA(occ_dataframe=test,full_dataframe=alldat, time_int="week")
+# Looks like it works!!
 
 
+# ggplot(df, aes(camID, DateTimeOriginal))+geom_line()+coord_flip()  
+ggplot(camDates, aes(camID, start_date))+geom_point()+coord_flip()+geom_vline(xintercept=date_range[1])
+# don't know why vline isn't showing up, maybe the time zone?
 
-
-
-
-
-
-ggplot(df, aes(camID, DateTimeOriginal))+geom_line()+coord_flip()  
-
-
-
-
-
+ggplot(camDates, aes(camID, end_date))+geom_point()+coord_flip()+geom_vline(xintercept=date_range[2])
 
 ########################
 # For 95% filter
