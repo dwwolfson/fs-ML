@@ -35,12 +35,8 @@ insert_NA<-function(occ_dataframe,full_dataframe, time_int){
     group_by(camID)%>%
     summarise(start_date=min(DateTimeOriginal), 
               start_yr=year(start_date),
-              start_wk=week(start_date),
-              start_yr_wk=paste(start_yr, start_wk, sep='_'),
               end_date=max(DateTimeOriginal), 
-              end_yr=year(end_date),
-              end_wk=week(end_date),
-              end_yr_wk=paste(end_yr, end_wk, sep='_'))
+              end_yr=year(end_date))
   # 2) Now I'll need to compare the deployment dates of each camera to the overall range of dates 
   #    that the occupancy table is compiling information for.
   date_range<-c(min(df$DateTimeOriginal), max(df$DateTimeOriginal)) # except these are different time zones
