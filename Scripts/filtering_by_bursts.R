@@ -106,7 +106,7 @@ alldat<-left_join(df, dat, by='FileName')
 #trim columns
 alldat<-alldat[, -which(names(alldat)%in%c('ROW_NUM', 'study.y', 'IMG_PATH'))]
 names(alldat)
-#probably not worth saving out this enormous csv
+
 #####################################################################################################################
 #Now group by burst and then filter by different confidence levels to see how many bursts are dropped
 
@@ -184,6 +184,8 @@ alldat$hour<-hour(alldat$DateTimeOriginal)
 alldat$month<-month(alldat$DateTimeOriginal)
 alldat<-alldat[!is.na(alldat$day),]            #filter on one of the new columns to remove rows where the dates didn't parse
 
+#write out
+write_csv(alldat, "C:/Users/apdwwolfson/Documents/Projects/Photo_Database/Machine_Learning/trained model output/Output/ceah_for_occ.csv")
 
 #Check all the different time zones that are present in the dataset
 # table(sapply(alldat$DateTimeOriginal, tz)) #it's saying that they're all "US/Pacific" ???
@@ -206,7 +208,7 @@ occ_db<-function(df,species, thresh, time_int){
   # df must be a dataframe with variables[camID=]
   # species must be the numeric label corresponding to the desired species ID from lookup table
   # thresh must be the cutoff for confidence values (between 0 and 1)
-  # time_in must be either 'day', 'week', or 'month'
+  # time_int must be either 'day', 'week', or 'month'
   df<-df[df$GUESS1==species,]
   df<-df[df$CONFIDENCE1>thresh,] #filter by confidence level
      years<-sort(unique(unlist(df[,"year"]))) # get vector of years present
@@ -242,12 +244,8 @@ insert_NA<-function(occ_dataframe,full_dataframe, time_int){
   group_by(camID)%>%
   summarise(start_date=min(DateTimeOriginal), 
             start_yr=year(start_date),
-            start_wk=week(start_date),
-            start_yr_wk=paste(start_yr, start_wk, sep='_'),
             end_date=max(DateTimeOriginal), 
-            end_yr=year(end_date),
-            end_wk=week(end_date),
-            end_yr_wk=paste(end_yr, end_wk, sep='_'))
+            end_yr=year(end_date))
 # 2) Now I'll need to compare the deployment dates of each camera to the overall range of dates 
 #    that the occupancy table is compiling information for.
 date_range<-c(min(df$DateTimeOriginal), max(df$DateTimeOriginal)) # except these are different time zones
