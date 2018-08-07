@@ -1,7 +1,7 @@
 # A function for taking the output of the Machine Learning model (MLWIC) and turn it into a table of 0/1 for occupancy analyses.
 
 occ_db<-function(df,species, thresh, time_int){ 
-  # df must be a dataframe with variable, camID
+  # df must be a dataframe with variables[camID=]
   # species must be the numeric label corresponding to the desired species ID from lookup table
   # thresh must be the cutoff for confidence values (between 0 and 1)
   # time_in must be either 'day', 'week', or 'month'
@@ -9,19 +9,43 @@ occ_db<-function(df,species, thresh, time_int){
   df<-df[df$CONFIDENCE1>thresh,] #filter by confidence level
   years<-sort(unique(unlist(df[,"year"]))) # get vector of years present
   db<-as.data.frame(matrix(nrow=length(unique(df$camID)))) #create dataframe with correct dimensions to fill with info
-  
+  db[,1]<-sort(unique(df$camID))
   for(i in 1:length(years)){
     tmp<-df[df$year==years[[i]],]   #grab subset by year
-    tmp<-dummy_cols(tmp, select_columns = time_int)  #make dummy columns by preferred time interval
+    tmp<-fastDummies::dummy_cols(tmp, select_columns = time_int)  #make dummy columns by preferred time interval
     tmp<-tmp[stringi::stri_order(sub(".*_", "", names(tmp)), numeric=TRUE)] #order the time interval columns
     tmp<-tmp%>%group_by(camID)%>%
       summarise_at(.vars=names(tmp)[grepl(paste0(time_int, '_'), names(tmp))], .funs = max) #collapse rows into 0/1
-    db$camID<-tmp$camID #set first column as the camera ID's
+    # db$camID<-tmp$camID #set first column as the camera ID's
+    
+    if(!length(db[,1])==length(tmp$camID)){  #check for missing camera names and add them in with NA's
+      missing<-setdiff(db[,1], tmp$camID)
+      if(length(missing)==1){
+        rowNum<-grep(pattern = missing, x = db[,1])
+        newRow<-c(missing, as.numeric(rep(NA, ncol(tmp)-1)))
+        tmp[seq(rowNum+1, nrow(tmp)+1),]<-tmp[seq(rowNum, nrow(tmp)),] #this creates an extra row so 
+        # the dataframe has the proper dimensions and duplicates a row at the point where a missing 
+        # one should be added
+        tmp[rowNum,]<-newRow #then this adds the missing row at the right place, overwriting the copied row
+        tmp[,-1]<-as.data.frame(sapply(tmp[,-1], as.numeric)) #need the columns to be numeric instead of character
+      }else if(length(missing)>1){  #if there are multiple cameras that are missing from the yearly subselection...
+        rowNums<-NA
+        for(i in 1:length(missing)){
+          rowNums[i]<-grep(pattern=missing[i], x = db[,1])
+        }
+        for(i in 1:length(rowNums)){
+          tmprow<-c(missing[i], as.numeric(rep(NA, ncol(tmp)-1)))
+          tmp[seq(rowNums[i]+1, nrow(tmp)+1),]<-tmp[seq(rowNums[i], nrow(tmp)),]
+          tmp[rowNums[i],]<-tmprow
+          tmp[,-1]<-as.data.frame(sapply(tmp[,-1], as.numeric))
+        }
+      }
+    }
     tmp<-tmp%>%select(-camID)%>%
       setNames(paste(years[[i]], names(tmp[-1]), sep='_'))  #add year prefix to the column names
     db<-cbind.data.frame(db,tmp)                            #add to dataframe
   }
-  db<-db[,-1] #cut off the first junk column which is empty
+  # db<-db[,-1] #cut off the first junk column which is empty
   return(db)
 }
 
@@ -35,17 +59,21 @@ insert_NA<-function(occ_dataframe,full_dataframe, time_int){
     group_by(camID)%>%
     summarise(start_date=min(DateTimeOriginal), 
               start_yr=year(start_date),
+              start_wk=week(start_date),
+              start_yr_wk=paste(start_yr, start_wk, sep='_'),
               end_date=max(DateTimeOriginal), 
-              end_yr=year(end_date))
+              end_yr=year(end_date),
+              end_wk=week(end_date),
+              end_yr_wk=paste(end_yr, end_wk, sep='_'))
   # 2) Now I'll need to compare the deployment dates of each camera to the overall range of dates 
   #    that the occupancy table is compiling information for.
-  date_range<-c(min(df$DateTimeOriginal), max(df$DateTimeOriginal)) # except these are different time zones
+  date_range<-c(min(full_dataframe$DateTimeOriginal), max(full_dataframe$DateTimeOriginal)) # except these are different time zones
   # First convert camDates to data.frame for it to work nicely with the ifelse statement
   camDates<-as.data.frame(camDates)
   #3) Now I need a way to determine if 1) the start date of the cam is after the global start, and by how much;
   # and 2) if the end data of the cam is before the global end date
   for(i in 1:nrow(camDates)){
-    if(camDates[i,"start_yr"]!=year(date_range[1])){
+    if(camDates[i,"start_yr"]!=lubridate::year(date_range[1])){
       print(paste("Camera", camDates[i, "camID"], "has a start date that isn't the same year as the global start date. Exclude and rerun."))
       break}
     s.diff<-difftime(camDates[i,'start_date'], date_range[1]) #diff b/w cam start and occ table global start
@@ -58,7 +86,7 @@ insert_NA<-function(occ_dataframe,full_dataframe, time_int){
       print(paste("Camera", camDates[i, "camID"], "starts more than one interval from global start. Adding NA's to occupancy dataframe."))
       start_cols<-round(s.diff.units)
       occ_dataframe[i,2:(2+start_cols)]<-NA} #this makes the first time interval that the camera has NA as well because it's a partial interval
-    if(camDates[i, "end_yr"]!=year(date_range[2])){
+    if(camDates[i, "end_yr"]!=lubridate::year(date_range[2])){
       print(paste("Camera", camDates[i, "camID"], "has an end date that isn't the same year as the global start date. Exclude and rerun."))
       break}
     e.diff<-difftime(camDates[i,'end_date'], date_range[2]) #diff b/w cam end and occ table global end
