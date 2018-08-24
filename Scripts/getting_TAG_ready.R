@@ -1,3 +1,71 @@
+# Add hour functionality to the occ_db() function.....
+
+library(tidyverse)
+library(lubridate)
+library(fastDummies)
+library(here)
+
+
+#Use the TAG data to test becuase it's pretty small and that's what I'll nedd to use it on anyway.
+setwd('C:/Users/apdwwolfson/Documents/Projects/Photo_Database/Machine_Learning/CEAH_Exif_output')
+tag_exif<-read_csv("All_TAG_output.csv")
+cols_keep<-c('Directory','FileName', 'DateTimeOriginal')
+tag_exif<-tag_exif[,cols_keep]
+tag_exif<-transform(tag_exif, unique_chk=as.numeric(factor(Directory)))
+
+tag_exif$camID<-sapply(tag_exif$FileName, function(x)
+  strsplit(x, '_')[[1]][1])
+
+#ML output
+df<-read_csv('C:/Users/apdwwolfson/Documents/Projects/Photo_Database/Machine_Learning/trained model output/Data/species_model_predictions/L1_preds.csv')
+
+#add study names to ml output
+df<-df%>%
+  mutate(study=ifelse(IMG_PATH%in%grep("CPW", IMG_PATH, value=T), "CPW", 
+                      ifelse(IMG_PATH%in%grep("NWRC", IMG_PATH, value=T), "NWRC",
+                             ifelse(IMG_PATH%in%grep('ACAM', IMG_PATH, value=T),'SREL', 
+                                    ifelse(IMG_PATH%in%grep('FL', IMG_PATH, value=T), 'FL',
+                                           ifelse(IMG_PATH%in%grep('CA-', IMG_PATH, value=T), 'CA', 
+                                                  ifelse(IMG_PATH%in%grep('Florida', IMG_PATH, value=T), 'FL',
+                                                         ifelse(IMG_PATH%in%grep('TAG', IMG_PATH, value=T), 'TAG', 
+                                                                ifelse(IMG_PATH%in%grep('Tejon', IMG_PATH, value=T), 'CA', 'flag')))))))))
+table(df$study)
+tag_ml<-df[df$study=="TAG",]
+apply(is.na(tag_ml), 2, sum) # no NA's
+
+#Convert the image name to just the camera number and image number
+tag_ml$FileName<-sapply(tag_ml$IMG_PATH, function(x)
+  strsplit(x, '/')[[1]][4])
+
+#Merge the two tag datasets
+sum(duplicated(tag_exif$FileName))
+tag_exif<-tag_exif[!duplicated(tag_exif$FileName),] #237,596 to 236,200
+
+alltag<-left_join(tag_ml, tag_exif, by='FileName')
+apply(is.na(alltag),2,sum)
+alltag<-na.omit(alltag) #remove 311 rows with no date
+
+#Deal with date/times
+options(lubridate.verbose = TRUE)
+summary(nchar(alltag$DateTimeOriginal))
+alltag$DateTimeOriginal<-ymd_hms(alltag$DateTimeOriginal, tz='US/Pacific') #no errors parsing
+alltag<-alltag %>% 
+  mutate(year=lubridate::year(DateTimeOriginal),
+         week=week(DateTimeOriginal),
+         day=yday(DateTimeOriginal),
+         hour=hour(DateTimeOriginal),
+         month=month(DateTimeOriginal))
+
+summary(alltag$DateTimeOriginal)
+table(alltag$year)
+alltag<-alltag[!alltag$year=='2011',] #there are some images that had metadata showing the year 2011, which should be removed
+
+#write out
+write_csv(alltag, "C:/Users/apdwwolfson/Documents/Projects/Photo_Database/Machine_Learning/trained model output/Output/TAG_cams/tagdf.csv")
+##############################################################################################################################
+##############################################################################################################################
+
+
 # A function for taking the output of the Machine Learning model (MLWIC) and turn it into a table of 0/1 for occupancy analyses.
 
 occ_db<-function(df,species, thresh, time_int){ 
@@ -56,8 +124,58 @@ occ_db<-function(df,species, thresh, time_int){
   # db<-db[,-1] #cut off the first junk column which is empty
   return(db)
 }
+#####################################################################################################################
+# A function for adding 0's when the camera is active but didn't have the focal sp present
 
-##############################################################################################################################
+#Now I need to add zeros for two different situations:
+# 1) When there are additional active intervals (that don't have the focal sp) at the start and end of 
+# a camera's "focal sp-containing" interval of pictures-- these aren't considered when you filter down to the focal sp as guess 1
+# 2) Similar to above, but between the start and end times, if there are entire intervals where no cameras contain the focal sp,
+# the interval won't be included (this is more of an issue as the time interval gets smaller)
+
+# Whereas the previous function filled in the difference between the global (or first) cam date and each individual 
+# camera date and fills in teh occupnacy table with NA's,
+# this finds the difference in the active date for each camera and the first date the focal sp is detected, and then fills in 0's.
+
+#Bring in reftable
+reftable<-read_csv('Data/TAG_Cam_Dates.csv')
+reftable$SetDate<-as.POSIXct(reftable$SetDate, format="%d-%b-%y")
+
+#reduce to just tag cams
+# reftable<-reftable[grep(x=reftable$LocationID, pattern = 'TAG'),] # if it wasn't already reduced down to just the tag cams
+
+# Extract last date present for each camera
+refs<-alltag%>%
+  group_by(camID)%>%
+  summarise(end.date=max(DateTimeOriginal))
+
+# Extract set date for each camera
+colnames(reftable)[1]<-"camID"
+reftable$camID<-gsub(' ', '', reftable$camID) # take out spaces in the camera names
+refs<-left_join(refs, reftable[,c("camID", "SetDate")])
+
+# TAG-TC33 wasn't on the spreadsheet for set dates for some reason
+refs[refs$camID=='TAG-TC33','SetDate']<-as.POSIXct('2015-08-18', format='%Y-%m-%d')
+
+# Don't really want time for the end date
+refs$end.date<-substr(refs$end.date, 1, 10)
+
+# Join start and end dates onto dataframe
+# alltag<-left_join(alltag, refs)
+
+# Plan:
+
+# First solution will deal with the entire dataframe as a whole:
+# Based on the global start and end dates that will set the dimensions of the occupancy dataframe, I'll first
+# 1) create a sequence from global start (from earliest set date) to global end date (as the last active date in the full unfiltered database,
+# which would equate to the end of the cameras being active) with the time interval of choice,
+# 2) make a vector made from the global start/end dates using the time interval and compare to the existing columns and 
+# use setdiff to pull out the columns that are missing from existing dataframe
+# 3) use the format: xx<-c('week_23', 'week_24', etc), df[xx]<-0 to create columns with proper names and 0's
+# 4) then sort the columns so they are in the proper order
+# This solves the problem of time intervals in 'the middle' of the deployments, but not cameras that were set and pulled at different times
+
+
 add_zero_cols<-function(occ_df, cam_set_dates, camID , time_int, dates_full_df){
   # 'dates_full_df' need to be a vector of dates in POSIXct format for date/times of the full dataset (not filtered for focal sp)
   #  'cam_set_dates' need to be a vector of dates in POSIXct format for when cameras were set up
@@ -65,7 +183,7 @@ add_zero_cols<-function(occ_df, cam_set_dates, camID , time_int, dates_full_df){
   if(!is.POSIXct(cam_set_dates)){
     stop("Error: Input 'cam_set_dates' needs to be in POSIXct format")}
   if(!is.POSIXct(dates_full_df)){
-    stop("Error: Input 'dates_full_df' needs to be in POSIXct format")}
+      stop("Error: Input 'dates_full_df' needs to be in POSIXct format")}
   if(!time_int%in%c("hour", "day", "week")){
     stop("Error: Input 'time_int' needs to be either hour, day, or week")
   }
@@ -80,11 +198,14 @@ add_zero_cols<-function(occ_df, cam_set_dates, camID , time_int, dates_full_df){
   occ_df<-occ_df[stringi::stri_order(sub(".*_", "", names(occ_df)), numeric=TRUE)]
   occ_df<-occ_df[,c(ncol(occ_df), 1:(ncol(occ_df)-1))]  #move camera ID column back to the first position
   return(occ_df)
-}
+  }
 
 ##############################################################################################################################
-# A function for adding NA's into the occupancy table when the camera isn't active (instead of 0's which would indicate the focal sp wasn't present)
 
+##############################################################################################################################
+# A function for 1) adding NA's into the occupancy table when the camera isn't active 
+# (instead of 0's which would indicate the focal sp wasn't present)
+# This is needed because the cameras don't all have the same set and pull dates
 insert_NA<-function(occ_dataframe,full_dataframe, time_int){
   #time_int needs to be either week, day, or hour for this function, can't be month (although I could write in month to just be equal to 30 days...)
   if(!is.POSIXct(full_dataframe$DateTimeOriginal)){
@@ -146,3 +267,43 @@ insert_NA<-function(occ_dataframe,full_dataframe, time_int){
   }
   return(occ_dataframe)
 }
+
+###############################################################################################################################
+alltag<-read_csv("Output/TAG_cams/tagdf.csv")
+
+
+#Simulations for day intervals
+
+#Baseline with no filtering
+no_filtdb<-occ_db(df = alltag, species = 22, thresh = 0, time_int = 'day')
+bust<-insert_NA(occ_dataframe = no_filtdb, full_dataframe = alltag, time_int = 'day') #the year thing screws it up
+tag15<-alltag[alltag$year==2015,]
+tag16<-alltag[alltag$year==2016,]
+occ15<-occ_db(df = tag15, species = 22, thresh = 0, time_int = 'day')
+test<-add_zero_cols(occ_df = occ15, cam_set_dates = refs$SetDate, camID = refs$camID, time_int = 'day', dates_full_df = tag15$DateTimeOriginal)
+test1<-insert_NA(occ_dataframe = test, full_dataframe = tag15, time_int = 'day')
+occ16<-occ_db(df=tag16, species=22, thresh=0, time_int='day')
+occ16<-add_zero_cols(occ_df = occ16, cam_set_dates = refs$SetDate, camID = refs$camID, time_int = 'day', dates_full_df = tag15$DateTimeOriginal)
+occ16<-insert_NA(occ_dataframe = occ16, full_dataframe = tag16, time_int = 'day')
+
+
+ref15<-refs[30:43,]
+
+# from camtrapR
+# ct15<-cameraOperation(CTtable = ref15, stationCol = 'camID', setupCol = 'SetDate', retrievalCol = 'end.date', dateFormat = "%Y-%m-%d")# works but only for daily intervals?
+df15<-insert_NA(occ_dataframe = occ15, full_dataframe = tag15, time_int = 'day')
+
+
+hist(as.numeric(alltag$DateTimeOriginal))
+table(alltag$camID, alltag$year)
+
+# Given that 14 cams are only in 2015, and 29 are only in 2016, prob makes sense to separate them
+
+df = alltag 
+species = 22
+thresh = 0
+time_int = 'day'
+
+
+
+
