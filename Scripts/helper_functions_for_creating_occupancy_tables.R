@@ -8,11 +8,12 @@ occ_db<-function(df,species, thresh, time_int){
   if(!time_int%in%c("day", "week", "month")){
     stop("Error: Input 'time_int' needs to be either day, week, or month")
   }
+  allcams<-unique(df$camID)
   df<-df[df$GUESS1==species,]    #filter by species of interest
   df<-df[df$CONFIDENCE1>thresh,] #filter by confidence level threshold below which images aren't used
   years<-sort(unique(unlist(df[,"year"]))) # get vector of years present
-  db<-as.data.frame(matrix(nrow=length(unique(df$camID)))) #create dataframe with correct dimensions to fill with info
-  db[,1]<-sort(unique(df$camID))    #arrange cameras in numeric order
+  db<-as.data.frame(matrix(nrow=length(allcams))) #create dataframe with correct dimensions to fill with info
+  db[,1]<-sort(unique(allcams))    #arrange cameras in numeric order
   for(i in 1:length(years)){
     tmp<-df[df$year==years[[i]],]   #grab subset by year
     tmp<-fastDummies::dummy_cols(tmp, select_columns = time_int)  #make dummy columns by preferred time interval
@@ -59,6 +60,7 @@ occ_db<-function(df,species, thresh, time_int){
 
 ##############################################################################################################################
 add_zero_cols<-function(occ_df, cam_set_dates, camID , time_int, dates_full_df){
+  # 'occ_df' is an occupancy table (of 0/1 format), as produced by the occ_db function
   # 'dates_full_df' need to be a vector of dates in POSIXct format for date/times of the full dataset (not filtered for focal sp)
   #  'cam_set_dates' need to be a vector of dates in POSIXct format for when cameras were set up
   # camID should be a vector of camera names that corresponds to the column for camera ID in the occupancy table being used
@@ -72,14 +74,29 @@ add_zero_cols<-function(occ_df, cam_set_dates, camID , time_int, dates_full_df){
   global_range<-c(min(cam_set_dates), max(dates_full_df))
   first_day<-yday(global_range[1])
   last_day<-yday(global_range[2])
+  years<-sort(unique(year(dates_full_df)))
+  db<-as.data.frame(matrix(nrow=length(unique(camID)))) #create dataframe with correct dimensions to fill with info
   # AT THIS POINT WILL ONLY WORK FOR A SINGLE YEAR AT A TIME; THIS CAN BE CHANGED LATER#
-  full_intervals<-paste(year(global_range[1]), time_int, seq(from=first_day, to=last_day, by=1), sep='_')
-  cols_to_add<-setdiff(full_intervals, names(occ15[-1]))
-  occ_df[cols_to_add]<-0  #these should be 0 because cam's were active, if there are periods at beginning and
-  # end where cameras weren't active the next function (insert_NA) should correct it
-  occ_df<-occ_df[stringi::stri_order(sub(".*_", "", names(occ_df)), numeric=TRUE)]
-  occ_df<-occ_df[,c(ncol(occ_df), 1:(ncol(occ_df)-1))]  #move camera ID column back to the first position
-  return(occ_df)
+  for(i in 1:length(years)){
+    tmp<-occ_df[, grep(pattern = years[i], x = names(occ_df))]
+    # if this year subset is the first year of active dates, then first day should be the minimum camera set date,
+    # if this year subset isn't the first year of activate dates, then first day should be 1
+    # if this year subset is the last year of active dates, then last day should be the last date in the full dataset (max(dates_full_df))
+    # if this year subset isn't the last year of active dates, then last day should be 365 (?)
+    if(years[i]==year(global_range[1])){
+      yr_day_start<-first_day
+    }else{ yr_day_start<-1}
+    if(years[i]==year(global_range[2])){
+      yr_day_end<-last_day
+    }else{yr_day_end<-365}
+    intervals<-paste(years[i], time_int, seq(from=yr_day_start, to=yr_day_end, by=1), sep='_')
+    cols_to_add<-setdiff(intervals,names(tmp))
+    tmp[cols_to_add]<-0 #these should be 0 because cam's were active, if there are periods at beginning and
+    # end where cameras weren't active the next function (insert_NA) should correct it
+    tmp<-tmp[stringi::stri_order(sub(".*_", "", names(tmp)), numeric=TRUE)]
+    db<-cbind.data.frame(db, tmp)
+  }
+  return(db)
 }
 
 ##############################################################################################################################
