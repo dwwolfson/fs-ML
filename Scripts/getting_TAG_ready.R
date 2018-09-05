@@ -76,11 +76,12 @@ occ_db<-function(df,species, thresh, time_int){
   if(!time_int%in%c("day", "week", "month")){
     stop("Error: Input 'time_int' needs to be either day, week, or month")
   }
+  allcams<-sort(unique(df$camID))
   df<-df[df$GUESS1==species,]    #filter by species of interest
   df<-df[df$CONFIDENCE1>thresh,] #filter by confidence level threshold below which images aren't used
   years<-sort(unique(unlist(df[,"year"]))) # get vector of years present
-  db<-as.data.frame(matrix(nrow=length(unique(df$camID)))) #create dataframe with correct dimensions to fill with info
-  db[,1]<-sort(unique(df$camID))    #arrange cameras in numeric order
+  db<-as.data.frame(matrix(nrow=length(allcams))) #create dataframe with correct dimensions to fill with info
+  db[,1]<-sort(unique(allcams))    #arrange cameras in numeric order
   for(i in 1:length(years)){
     tmp<-df[df$year==years[[i]],]   #grab subset by year
     tmp<-fastDummies::dummy_cols(tmp, select_columns = time_int)  #make dummy columns by preferred time interval
@@ -167,8 +168,8 @@ refs$end.date<-substr(refs$end.date, 1, 10)
 
 # First solution will deal with the entire dataframe as a whole:
 # Based on the global start and end dates that will set the dimensions of the occupancy dataframe, I'll first
-# 1) create a sequence from global start (from earliest set date) to global end date (as the last active date in the full unfiltered database,
-# which would equate to the end of the cameras being active) with the time interval of choice,
+# 1) create a sequence from global start (from earliest set date) to global end date (as the last active date in the 
+# full unfiltered database,which would equate to the end of the cameras being active) with the time interval of choice,
 # 2) make a vector made from the global start/end dates using the time interval and compare to the existing columns and 
 # use setdiff to pull out the columns that are missing from existing dataframe
 # 3) use the format: xx<-c('week_23', 'week_24', etc), df[xx]<-0 to create columns with proper names and 0's
@@ -177,6 +178,7 @@ refs$end.date<-substr(refs$end.date, 1, 10)
 
 
 add_zero_cols<-function(occ_df, cam_set_dates, camID , time_int, dates_full_df){
+  # 'occ_df' is an occupancy table (of 0/1 format), as produced by the occ_db function
   # 'dates_full_df' need to be a vector of dates in POSIXct format for date/times of the full dataset (not filtered for focal sp)
   #  'cam_set_dates' need to be a vector of dates in POSIXct format for when cameras were set up
   # camID should be a vector of camera names that corresponds to the column for camera ID in the occupancy table being used
@@ -190,14 +192,29 @@ add_zero_cols<-function(occ_df, cam_set_dates, camID , time_int, dates_full_df){
   global_range<-c(min(cam_set_dates), max(dates_full_df))
   first_day<-yday(global_range[1])
   last_day<-yday(global_range[2])
-  # AT THIS POINT WILL ONLY WORK FOR A SINGLE YEAR AT A TIME; THIS CAN BE CHANGED LATER#
-  full_intervals<-paste(year(global_range[1]), time_int, seq(from=first_day, to=last_day, by=1), sep='_')
-  cols_to_add<-setdiff(full_intervals, names(occ15[-1]))
-  occ_df[cols_to_add]<-0  #these should be 0 because cam's were active, if there are periods at beginning and
-  # end where cameras weren't active the next function (insert_NA) should correct it
-  occ_df<-occ_df[stringi::stri_order(sub(".*_", "", names(occ_df)), numeric=TRUE)]
-  occ_df<-occ_df[,c(ncol(occ_df), 1:(ncol(occ_df)-1))]  #move camera ID column back to the first position
-  return(occ_df)
+  years<-sort(unique(year(dates_full_df)))
+   db<-data.frame(camID=camID) #create dataframe with correct dimensions to fill with info
+  for(i in 1:length(years)){
+    tmp<-occ_df[, grep(pattern = years[i], x = names(occ_df))]
+    # if this year subset is the first year of active dates, then first day should be the minimum camera set date,
+    # if this year subset isn't the first year of activate dates, then first day should be 1
+    # if this year subset is the last year of active dates, then last day should be the last date in the full dataset (max(dates_full_df))
+    # if this year subset isn't the last year of active dates, then last day should be 365 (?)
+    if(years[i]==year(global_range[1])){
+      yr_day_start<-first_day
+    }else{ yr_day_start<-1}
+    if(years[i]==year(global_range[2])){
+      yr_day_end<-last_day
+    }else{yr_day_end<-365}
+    intervals<-paste(years[i], time_int, seq(from=yr_day_start, to=yr_day_end, by=1), sep='_')
+    cols_to_add<-setdiff(intervals,names(tmp))
+    tmp[cols_to_add]<-0 #these should be 0 because cam's were active with the exception of if they were set later than the first camera
+    #or taken down before the last camera. For these cases, the next function (insert_NA) should correct it
+    tmp<-tmp[stringi::stri_order(sub(".*_", "", names(tmp)), numeric=TRUE)]
+    db<-cbind.data.frame(db, tmp)
+  }
+  db[,1]<-camID
+  return(db)
   }
 
 ##############################################################################################################################
@@ -206,6 +223,7 @@ add_zero_cols<-function(occ_df, cam_set_dates, camID , time_int, dates_full_df){
 # A function for 1) adding NA's into the occupancy table when the camera isn't active 
 # (instead of 0's which would indicate the focal sp wasn't present)
 # This is needed because the cameras don't all have the same set and pull dates
+
 insert_NA<-function(occ_dataframe,full_dataframe, time_int){
   #time_int needs to be either week, day, or hour for this function, can't be month (although I could write in month to just be equal to 30 days...)
   if(!is.POSIXct(full_dataframe$DateTimeOriginal)){
@@ -214,30 +232,22 @@ insert_NA<-function(occ_dataframe,full_dataframe, time_int){
   if(!time_int%in%c("hour", "day", "week")){
     stop("Error: Input 'time_int' needs to be either hour, day, or week")
   }
-  # 1) First I'll probably want to pull out all the deployment info for all the cameras
-  camDates<-full_dataframe%>%  #note this only reflects
+  # 1) First I'll probably want to pull out the active dates for each camera.
+  # Note, this is different than the deployment data, it reflects the start/end of images for a camera (regardless of focal sp)
+  camDates<-full_dataframe%>%  
     group_by(camID)%>%
     summarise(start_date=min(DateTimeOriginal), 
               start_yr=year(start_date),
-              start_wk=week(start_date),
-              start_day=yday(start_date),
-              start_yr_wk=paste(start_yr, start_wk, sep='_'),
               end_date=max(DateTimeOriginal), 
-              end_yr=year(end_date),
-              end_wk=week(end_date),
-              end_day=yday(end_date),
-              end_yr_wk=paste(end_yr, end_wk, sep='_'))
-  # 2) Now I'll need to compare the deployment dates of each camera to the overall range of dates 
+              end_yr=year(end_date))
+  # 2) Now I'll need to compare the active dates of each camera to the overall range of dates 
   #    that the occupancy table is compiling information for.
-  date_range<-c(min(full_dataframe$DateTimeOriginal), max(full_dataframe$DateTimeOriginal)) # except these are different time zones
-  # First convert camDates to data.frame for it to work nicely with the ifelse statement
+  date_range<-c(min(full_dataframe$DateTimeOriginal), max(full_dataframe$DateTimeOriginal)) 
+  # First convert camDates from tibble to data.frame for it to work nicely with the ifelse statement
   camDates<-as.data.frame(camDates)
   #3) Now I need a way to determine if 1) the start date of the cam is after the global start, and by how much;
-  # and 2) if the end data of the cam is before the global end date
+  # and 2) if the end data of the cam is before the global end date, and by how much
   for(i in 1:nrow(camDates)){
-    if(camDates[i,"start_yr"]!=lubridate::year(date_range[1])){
-      print(paste("Camera", camDates[i, "camID"], "has a start date that isn't the same year as the global start date. Exclude and rerun."))
-      break}
     s.diff<-difftime(camDates[i,'start_date'], date_range[1]) #diff b/w cam start and occ table global start
     if(time_int=="week"){s.diff.units<-as.numeric(s.diff, units="weeks")}
     if(time_int=="day"){s.diff.units<-as.numeric(s.diff, units="days")}
@@ -247,10 +257,16 @@ insert_NA<-function(occ_dataframe,full_dataframe, time_int){
     } else if(abs(s.diff.units)>1){
       print(paste("Camera", camDates[i, "camID"], "starts more than one interval from global start. Adding NA's to occupancy dataframe."))
       start_cols<-round(s.diff.units)
-      occ_dataframe[i,2:(2+start_cols)]<-NA} #this makes the first time interval that the camera has NA as well because it's a partial interval
-    if(camDates[i, "end_yr"]!=lubridate::year(date_range[2])){
-      print(paste("Camera", camDates[i, "camID"], "has an end date that isn't the same year as the global start date. Exclude and rerun."))
-      break}
+      if(as.numeric(camDates[i, 'start_yr'])!=strsplit(names(occ_dataframe)[2], '_')[[1]][1]){
+        cam_yr<-as.numeric(camDates[i,'start_yr'])
+        if(time_int=='week'){suffix<-lubridate::week(camDates[i,'start_date'])}
+        if(time_int=='day'){suffix<-lubridate::yday(camDates[i,'start_date'])}
+        if(time_int=='hour'){suffix<-lubridate::hour(camDates[i,'start_date'])
+        print("this function needs more work if using hours with multiple start years between cameras")}
+        occ_dataframe[i, 2:(grep(pattern = paste(cam_yr, time_int, suffix, sep="_"), x = names(occ_dataframe)))]<-NA
+      }else if(as.numeric(camDates[i, 'start_yr'])==strsplit(names(occ_dataframe)[2], '_')[[1]][1]){
+        occ_dataframe[i,2:(2+start_cols)]<-NA}} #this makes the first time interval that the camera has NA as well because it's a partial interval
+    
     e.diff<-difftime(camDates[i,'end_date'], date_range[2]) #diff b/w cam end and occ table global end
     if(time_int=="week"){e.diff.units<-as.numeric(e.diff, units="weeks")}
     if(time_int=="day"){e.diff.units<-as.numeric(e.diff, units="days")}
@@ -259,15 +275,20 @@ insert_NA<-function(occ_dataframe,full_dataframe, time_int){
       print(paste("Camera", camDates[i, "camID"], "ends within one time interval of global end."))
     } else if (abs(e.diff.units)>1){
       print(paste("Camera", camDates[i, "camID"], "ends more than one interval from global end. Adding NA's to occupancy dataframe."))
-      num_underscores<-stringr::str_count(last(names(occ_dataframe)), '_')
-      last_col<-as.numeric(strsplit(last(names(occ_dataframe)), '_')[[1]][num_underscores+1])+round(e.diff.units)
-      occ_dataframe[i, grep(last_col, names(occ_dataframe)):ncol(occ_dataframe)]<-NA 
-      #this makes the last time interval that the camera has NA as well because it's a partial interval
+      num_underscores<-stringr::str_count(last(names(occ_dataframe)), '_')  #figure out how many underscores for pulling off in the next line
+      #there'd probably always be two, but I wanted to be safe
+      # this is the situation where the active start year and the global start aren't the same, 
+      # so you need to add a year's worth of NA's until the cam's active phase starts
+      cam_yr<-as.numeric(camDates[i, 'end_yr'])
+      if(time_int=='week'){suffix<-lubridate::week(camDates[i,'end_date'])}
+      if(time_int=='day'){suffix<-lubridate::yday(camDates[i,'end_date'])}
+      if(time_int=='hour'){suffix<-lubridate::hour(camDates[i,'end_date'])
+      print("this function needs more work if using hours with multiple end years between cameras")}  
+      occ_dataframe[i, grep(pattern = paste(cam_yr, time_int, suffix, sep="_"),x = names(occ_dataframe)):ncol(occ_dataframe)]<-NA 
     }
-  }
+  } 
   return(occ_dataframe)
 }
-
 ###############################################################################################################################
 alltag<-read_csv("Output/TAG_cams/tagdf.csv")
 
@@ -276,10 +297,35 @@ alltag<-read_csv("Output/TAG_cams/tagdf.csv")
 
 #Baseline with no filtering
 no_filtdb<-occ_db(df = alltag, species = 22, thresh = 0, time_int = 'day')
+test<-insert_NA(occ_dataframe = no_filtdb, full_dataframe = alltag, time_int = 'day')
+
+
+occ.tag<-add_zero_cols(occ_df = no_filtdb, cam_set_dates = refs$SetDate, camID = refs$camID, time_int = 'day', dates_full_df = alltag$DateTimeOriginal)
+
+df = alltag
+species = 22
+thresh = 0
+time_int = 'day'
+
+
+test<-add_zero_cols(occ_df = no_filtdb, 
+                    cam_set_dates = refs$SetDate,
+                    camID = refs$camID,
+                    time_int = 'day',
+                    dates_full_df = alltag$DateTimeOriginal)
+
+testy<-insert_NA(occ_dataframe = test, full_dataframe = alltag, time_int = 'day')
+occ_dataframe = test 
+full_dataframe = alltag 
+time_int = 'day'
+
 bust<-insert_NA(occ_dataframe = no_filtdb, full_dataframe = alltag, time_int = 'day') #the year thing screws it up
 tag15<-alltag[alltag$year==2015,]
 tag16<-alltag[alltag$year==2016,]
+
 occ15<-occ_db(df = tag15, species = 22, thresh = 0, time_int = 'day')
+test<-insert_NA(occ_dataframe = occ15, full_dataframe = tag15, time_int = 'day')
+
 test<-add_zero_cols(occ_df = occ15, cam_set_dates = refs$SetDate, camID = refs$camID, time_int = 'day', dates_full_df = tag15$DateTimeOriginal)
 test1<-insert_NA(occ_dataframe = test, full_dataframe = tag15, time_int = 'day')
 occ16<-occ_db(df=tag16, species=22, thresh=0, time_int='day')
@@ -303,6 +349,8 @@ df = alltag
 species = 22
 thresh = 0
 time_int = 'day'
+
+
 
 
 
