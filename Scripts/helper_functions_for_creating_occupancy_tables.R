@@ -74,27 +74,39 @@ add_zero_cols<-function(occ_df, cam_set_dates, camID , time_int, dates_full_df){
   global_range<-c(min(cam_set_dates), max(dates_full_df))
   first_day<-yday(global_range[1])
   last_day<-yday(global_range[2])
+  first_wk<-week(global_range[1])
+  last_wk<-week(global_range[2])
   years<-sort(unique(year(dates_full_df)))
   db<-data.frame(camID=camID) #create dataframe with correct dimensions to fill with info
   for(i in 1:length(years)){
     tmp<-occ_df[, grep(pattern = years[i], x = names(occ_df))]
-    # if this year subset is the first year of active dates, then first day should be the minimum camera set date,
-    # if this year subset isn't the first year of activate dates, then first day should be 1
-    # if this year subset is the last year of active dates, then last day should be the last date in the full dataset (max(dates_full_df))
-    # if this year subset isn't the last year of active dates, then last day should be 365 (?)
+    # if this year subset is the first year of active dates, then first day/week should be the minimum camera set date,
+    # if this year subset isn't the first year of activate dates, then first day/week should be 1
+    # if this year subset is the last year of active dates, then last day/week should be the last date in the full dataset (max(dates_full_df))
+    # if this year subset isn't the last year of active dates, then last day should be 365; last week should be 52
+    if(time_int=='day'){
     if(years[i]==year(global_range[1])){
       yr_day_start<-first_day
-    }else{ yr_day_start<-1}
+    } else { yr_day_start<-1}
     if(years[i]==year(global_range[2])){
       yr_day_end<-last_day
-    }else{yr_day_end<-365}
+    }else {yr_day_end<-365}
     intervals<-paste(years[i], time_int, seq(from=yr_day_start, to=yr_day_end, by=1), sep='_')
+    } else if (time_int=='week'){
+      if(years[i]==year(global_range[1])){
+        yr_wk_start<-first_wk
+      } else {yr_wk_start<-1}
+      if(years[i]==year(global_range[2])){
+        yr_wk_end<-last_wk
+      } else {yr_wk_end<-52}
+      intervals<-paste(years[i], time_int, seq(from=yr_wk_start, to=yr_wk_end, by=1), sep='_')
+    }
     cols_to_add<-setdiff(intervals,names(tmp))
     tmp[cols_to_add]<-0 #these should be 0 because cam's were active with the exception of if they were set later than the first camera
     #or taken down before the last camera. For these cases, the next function (insert_NA) should correct it
     tmp<-tmp[stringi::stri_order(sub(".*_", "", names(tmp)), numeric=TRUE)]
     db<-cbind.data.frame(db, tmp)
-  }
+    }
   db[,1]<-camID
   return(db)
 }
