@@ -1,0 +1,172 @@
+---
+title: "ML output to occupancy simulations"
+output: html_document
+Author: David WOlfson
+Date: 9/7/2018
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(root.dir='C:/Users/apdwwolfson/Documents/Projects/Photo_Database/Machine_Learning/trained model output')
+```
+
+```{r load_libraries, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(fastDummies)
+library(stringi)
+library(lubridate)
+library(ezknitr)
+library(here)
+```
+
+```{r Import_datasets, message=FALSE}
+dat<-read_csv("Output/ceah_for_occ.csv")
+```
+
+This dataset (imported on the line above contains all Machine Learning (ML) output from the CEAH images from FL and CA
+from the period of February 2015 - August 2017, which is about 5 million images.  The date, sequence number (aka burst #'s),
+and Event Number (aka unique # for each burst) have been extracted using the ExifTool application and 
+merged to the ML output. The dates were then converted to POSIXct and specific date categories were compiled (hour, day, week, etc).
+
+```{r}
+refs<-read_csv("Output/ready_for_occ_analysis/camera_deploy_dates.csv")
+```
+
+This has the official camera deployment dates as well as the last datetime an image was taken for a camera.
+Assuming there wasn't a complete absence of any detections (of any spp) at the end, this should be a fine way to get the end date.
+
+```{r}
+#Format date table
+refs$end.date<-as.POSIXct(refs$end.date, format="%m/%d/%Y")
+refs$SetDate<-as.POSIXct(refs$SetDate, format="%m/%d/%Y")
+```
+
+```{r Import_functions}
+source("Scripts/helper_functions_for_creating_occupancy_tables.R")
+```
+
+The preceding functions were made to help in the post-processing of ML output into occupancy tables ready for analysis.
+
+The first function 'occ_db' takes a dataframe (such as what you'd have as output from the ML model)
+that contains variables for 1) camera ID, 2) species to create occupancy table for (only works for single species for now),
+and 3) a column for time interval of interest (e.g. a week column listing the week number for each observation)
+At this point, the only time intervals that are accepted are day, week, and month (hour can eventually be added)
+
+The second function 'add_zero_cols' takes the inputs of the table with the deployments and end of the active period for
+all cameras and makes sure that there is a full sequence of time-interval columns and that they match up for all cameras.
+The beginning is the when the first camera was deployed, and the end is the last active date for any camera.
+
+The third function 'insert_NA' takes the output of the second function and does several steps:
+1) Makes a temporary dataframe which stores the start and end dates which each camera has data for,
+2) Cycles through each cam and determines if the start dates for the camera are after the global start dates,
+(global start date==the first date for any camera which will determine the first time interval for the occupancy table)
+3) If the camera starts later than the global start, then NA's are inserted into the columns for which there isn't data
+for that specific camera and a message is printed saying that NA's are being inserted.
+4) The same process is repeated for the end dates
+Btw, if the start and end dates are within one time interval from the global times, no NA's are inserted and a
+message is printed that states as much.
+
+######################################################################################################################
+### Simulations
+
+The confidence values for which to filter values by will be considered in two ways:
+1) by comparing the number of occupancy intervals affected when compared to a 0.5 confidence baseline, and
+2) by comparing to a flat baseline where no filtering is applied
+
+The resulting output will show the proportion of time intervals that switch from 1 to 0 as you cut out data.
+
+```{r message=FALSE, results='hide'}
+### Simulations for weekly time interval with pig as focal sp
+confs<-seq(0.51, .99, 0.01)
+week_res<-data.frame(thresholds=confs, occ_int_changed=NA, prop_changed=NA)
+
+# 50% confidence to compare to
+baseline50<-occ_db(df=dat, 
+                   species = 22, 
+                   thresh = 0.5, 
+                   time_int = 'week')
+
+baseline50<-add_zero_cols(occ_df = baseline50, 
+                          cam_set_dates = refs$SetDate, 
+                          camID = refs$camID,
+                          time_int = 'week', 
+                          dates_full_df = dat$DateTimeOriginal)
+
+baseline50<-insert_NA(occ_dataframe = baseline50, 
+                      full_dataframe = dat, 
+                      time_int = 'week')
+
+
+b50<-sum(rowSums(baseline50[,-1], na.rm = T)) 
+
+# all the other confidence values between 50 and 99%
+for(i in 1:nrow(week_res)){
+  tmp<-occ_db(df=dat, species = 22, thresh = confs[i], time_int = 'week') #22 is wild pig species label
+  tmp<-add_zero_cols(occ_df = tmp, cam_set_dates = refs$SetDate, camID = refs$camID, time_int = 'week',dates_full_df = dat$DateTimeOriginal)
+  tmp<-insert_NA(occ_dataframe = tmp, full_dataframe = dat, time_int = 'week')
+  week_res[i, 2]<-b50-sum(rowSums(tmp[,-1], na.rm = T))
+  week_res[i, 3]<-week_res[i,2]/b50
+  print(paste('Confidence value', confs[i], sep=' '))
+} 
+```
+
+```{r}
+ggplot(week_res, aes(thresholds, prop_changed))+geom_point()+
+  ggtitle("Proportion of occupancy intervals changed compared to 50% confidence level")+
+  theme(plot.title=element_text(hjust=0.5))
+```
+
+The following is if compared to a baseline of no confidence filter
+```{r message=FALSE, results='hide'}
+bzero<-occ_db(df=dat, 
+                   species = 22, 
+                   thresh = 0, 
+                   time_int = 'week')
+
+bzero<-add_zero_cols(occ_df = bzero, 
+                          cam_set_dates = refs$SetDate, 
+                          camID = refs$camID,
+                          time_int = 'week', 
+                          dates_full_df = dat$DateTimeOriginal)
+
+bzero<-insert_NA(occ_dataframe = bzero, 
+                      full_dataframe = dat, 
+                      time_int = 'week')
+b0<-sum(rowSums(bzero[,-1], na.rm=T))
+
+
+#' all confidence values between 0.01 and 0.99
+confs<-seq(0.01, .99, 0.01)
+week_res<-data.frame(thresholds=confs, occ_int_changed=NA, prop_changed=NA)
+
+
+for(i in 1:nrow(week_res)){
+  tmp<-occ_db(df=dat, species = 22, thresh = confs[i], time_int = 'week') #22 is wild pig species label
+  tmp<-add_zero_cols(occ_df = tmp, cam_set_dates = refs$SetDate, camID = refs$camID, time_int = 'week',dates_full_df = dat$DateTimeOriginal)
+  tmp<-insert_NA(occ_dataframe = tmp, full_dataframe = dat, time_int = 'week')
+  week_res[i, 2]<-b0-sum(rowSums(tmp[,-1], na.rm = T))
+  week_res[i, 3]<-week_res[i,2]/b0
+  print(paste('Confidence value', confs[i], sep=' '))
+} 
+```
+
+```{r}
+ggplot(week_res, aes(thresholds, prop_changed))+geom_point()+
+  ggtitle("Proportion of occupancy intervals changed compared to zero baseline")+
+  theme(plot.title=element_text(hjust=0.5))
+```
+
+```{r Document_footer}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+
+
+
