@@ -26,7 +26,7 @@ occ_db<-function(df,species, thresh, time_int){
       missing<-setdiff(db[,1], tmp$camID)
       if(length(missing)==1){ # the structure of what to do is different if only one camera is missing vs multiple
         rowNum<-grep(pattern = missing, x = db[,1])   #find which cam is missing
-        newRow<-c(missing, as.numeric(rep(NA, ncol(tmp)-1)))   # combine cam name with correct dim's of NA's
+        newRow<-c(missing, as.numeric(rep(0, ncol(tmp)-1)))   # combine cam name with correct dim's of 0's
         tmp[seq(rowNum+1, nrow(tmp)+1),]<-tmp[seq(rowNum, nrow(tmp)),] #this creates an extra row so 
         # the dataframe has the proper dimensions and duplicates a row at the point where a missing 
         # one should be added
@@ -38,7 +38,7 @@ occ_db<-function(df,species, thresh, time_int){
           rowNums[j]<-grep(pattern=missing[j], x = db[,1]) #collect the rows (cameras) that are missing
         }
         for(k in 1:length(rowNums)){
-          tmprow<-c(missing[k], as.numeric(rep(NA, ncol(tmp)-1)))
+          tmprow<-c(missing[k], as.numeric(rep(0, ncol(tmp)-1)))
           if(rowNums[k]<=nrow(tmp)){
             tmp[seq(rowNums[k]+1, nrow(tmp)+1),]<-tmp[seq(rowNums[k], nrow(tmp)),]
             tmp[rowNums[k],]<-tmprow
